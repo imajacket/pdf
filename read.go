@@ -4,7 +4,7 @@
 
 // Package pdf implements reading of PDF files.
 //
-// Overview
+// # Overview
 //
 // PDF is Adobe's Portable Document Format, ubiquitous on the internet.
 // A PDF document is a complex data format built on a fairly simple structure.
@@ -43,7 +43,6 @@
 // they are implemented only in terms of the Value API and could be moved outside
 // the package. Equally important, traversal of other PDF data structures can be implemented
 // in other packages as needed.
-//
 package pdf
 
 // BUG(rsc): The package is incomplete, although it has been used successfully on some
@@ -67,9 +66,11 @@ import (
 	"crypto/cipher"
 	"crypto/md5"
 	"crypto/rc4"
+	"crypto/sha256"
 	"encoding/ascii85"
 	"fmt"
 	"io"
+	"io/fs"
 	"io/ioutil"
 	"os"
 	"sort"
@@ -85,6 +86,8 @@ type Reader struct {
 	trailerptr objptr
 	key        []byte
 	useAES     bool
+	Hash       string
+	FileInfo   fs.FileInfo
 }
 
 type xref struct {
@@ -106,16 +109,34 @@ func Open(file string) (*Reader, error) {
 		f.Close()
 		return nil, err
 	}
-	_, err = f.Stat()
+
+	info, err := f.Stat()
 	if err != nil {
 		f.Close()
 		return nil, err
 	}
-	return NewReader(f)
+
+	fileContent, err := os.ReadFile(file)
+	if err != nil {
+		return nil, err
+	}
+
+	hash := sha256.New()
+	_, err = hash.Write(fileContent)
+	if err != nil {
+		return nil, err
+	}
+
+	hashSum := hash.Sum(nil)
+	hashStr := fmt.Sprintf("%x", hashSum)
+
+	fileContent = nil
+
+	return NewReader(f, info, hashStr)
 }
 
 // NewReader opens a file for reading, using the data in f with the given total size.
-func NewReader(f io.Reader) (*Reader, error) {
+func NewReader(f io.Reader, info fs.FileInfo, hash string) (*Reader, error) {
 
 	buf := bytes.NewBuffer([]byte{})
 	nRead, err := io.Copy(buf, f.(io.Reader))
@@ -123,14 +144,14 @@ func NewReader(f io.Reader) (*Reader, error) {
 		fmt.Println(err)
 	}
 
-	return NewReaderEncrypted(bytes.NewReader(buf.Bytes()), nRead, nil)
+	return NewReaderEncrypted(bytes.NewReader(buf.Bytes()), nRead, nil, info, hash)
 }
 
 // NewReaderEncrypted opens a file for reading, using the data in f with the given total size.
 // If the PDF is encrypted, NewReaderEncrypted calls pw repeatedly to obtain passwords
 // to try. If pw returns the empty string, NewReaderEncrypted stops trying to decrypt
 // the file and returns an error.
-func NewReaderEncrypted(f io.ReaderAt, size int64, pw func() string) (*Reader, error) {
+func NewReaderEncrypted(f io.ReaderAt, size int64, pw func() string, info fs.FileInfo, hash string) (*Reader, error) {
 	buf := make([]byte, 10)
 	f.ReadAt(buf, 0)
 	if !bytes.HasPrefix(buf, []byte("%PDF-1.")) || buf[7] < '0' || buf[7] > '7' || buf[8] != '\r' && buf[8] != '\n' {
@@ -153,8 +174,10 @@ func NewReaderEncrypted(f io.ReaderAt, size int64, pw func() string) (*Reader, e
 	}
 
 	r := &Reader{
-		f:   f,
-		end: end,
+		f:        f,
+		end:      end,
+		Hash:     hash,
+		FileInfo: info,
 	}
 	pos := end - endChunk + int64(i)
 	b := newBuffer(io.NewSectionReader(f, pos, end-pos), pos)
@@ -629,7 +652,7 @@ func (v Value) RawString() string {
 	return x
 }
 
-// Text returns v's string value interpreted as a ``text string'' (defined in the PDF spec)
+// Text returns v's string value interpreted as a “text string” (defined in the PDF spec)
 // and converted to UTF-8.
 // If v.Kind() != String, Text returns the empty string.
 func (v Value) Text() string {
@@ -826,7 +849,7 @@ func (e *errorReadCloser) Close() error {
 
 // Reader returns the data contained in the stream v.
 // If v.Kind() != Stream, Reader returns a ReadCloser that
-// responds to all reads with a ``stream not present'' error.
+// responds to all reads with a “stream not present” error.
 func (v Value) Reader() io.ReadCloser {
 	x, ok := v.data.(stream)
 	if !ok {
