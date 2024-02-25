@@ -68,7 +68,9 @@ import (
 	"crypto/rc4"
 	"crypto/sha256"
 	"encoding/ascii85"
+	"errors"
 	"fmt"
+	"github.com/h2non/filetype"
 	"io"
 	"io/fs"
 	"io/ioutil"
@@ -103,22 +105,18 @@ func (r *Reader) errorf(format string, args ...interface{}) {
 
 // Open opens a file for reading.
 func Open(file string) (*Reader, error) {
-	// TODO: Deal with closing file.
-	f, err := os.Open(file)
-	if err != nil {
-		f.Close()
-		return nil, err
-	}
-
-	info, err := f.Stat()
-	if err != nil {
-		f.Close()
-		return nil, err
-	}
-
 	fileContent, err := os.ReadFile(file)
 	if err != nil {
 		return nil, err
+	}
+
+	kind, err := filetype.Match(fileContent)
+	if err != nil {
+		return nil, err
+	}
+
+	if kind.MIME.Value != "application/pdf" {
+		return nil, errors.New("wrong file type")
 	}
 
 	hash := sha256.New()
@@ -131,6 +129,18 @@ func Open(file string) (*Reader, error) {
 	hashStr := fmt.Sprintf("%x", hashSum)
 
 	fileContent = nil
+
+	f, err := os.Open(file)
+	if err != nil {
+		f.Close()
+		return nil, err
+	}
+
+	info, err := f.Stat()
+	if err != nil {
+		f.Close()
+		return nil, err
+	}
 
 	return NewReader(f, info, hashStr)
 }
